@@ -1,0 +1,149 @@
+---
+title: "Fintmodel Berekening"
+author: "Joost Vanoverbeke"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, cache = FALSE, autodep = TRUE, cache.extra = R.version)
+
+```
+
+
+```{r libraries, cache=FALSE}
+
+library(tidyverse)
+library(magrittr)
+library(janitor)
+library(lubridate)
+library(readxl)
+library(writexl)
+library(RODBC)
+# library(INBOtheme)
+
+library(parallel)
+
+
+options(stringsAsFactors = FALSE)
+
+```
+
+
+```{r ophalen scripts & gegevens}
+
+source("Fuzzy_logic.R")
+
+fintData_1D_short <- read_delim("fintData_1D_short.csv", delim = ";")
+
+Data.adult <- fintData_1D_short %>% 
+  select(Afstand_GR, Year, OMES, X, Y, Temp.A.linear, Oxygen.A.linear, Salinity.A.linear, Depth, AvgVel.QN) %>% 
+  rename_at(names(.), ~c("afst","Year","OMES","x","y",names(Tolerantie.adult)[-6])) %>% 
+  drop_na()
+
+```
+
+
+```{r ophalen logische regels adult}
+
+Rules.adult <- read.csv("rulesR.csv",sep=";")
+
+Rules.adult <- Rules.adult[c("temp","oxy","sal","depth","vel","silarv","SI")]
+names(Rules.adult) <- c(names(Tolerantie.adult),"SI")
+# de tolerantiezone die als optimaal wordt beschouwd wordt telkens als 'M' gecatalogeerd:
+Rules.adult$Oxy[Rules.adult$Oxy == "H"] <- "M"
+Rules.adult$Sal[Rules.adult$Sal == "L"] <- "M"
+
+##### aanpassen regels paaihabitat
+Rules.adult$SI[Rules.adult$SIL == "M" & Rules.adult$SI == "H"] <- "M"
+
+Rules.adult$SI[Rules.adult$Sal == "H"] <- "L"
+Rules.adult$SI[Rules.adult$Diepte == "L"] <- "L"
+Rules.adult$SI[Rules.adult$Stroom == "H"] <- "L"
+Rules.adult$SI[Rules.adult$Oxy == "L"] <- "L"
+
+```
+
+
+```{r berekenen SI met weglaten van variabelen}
+
+# zonder SIL 
+vars <- names(Tolerantie.adult)[-6]
+excl <- names(Tolerantie.adult)[-6]
+cl <- makeCluster(3)
+for(nvr in excl) {
+  vr <- vars[vars!=nvr]
+  R.tmp <- unique(Rules.adult[c(vr,"SI")])
+  Tol <- Tolerantie.adult[vr]
+  Rls <- data.frame(unique(R.tmp[vr]),
+                    apply(unique(R.tmp[vr]), 1, function(r) {
+                      SIs <- R.tmp$SI[apply(R.tmp[vr], 1, function(x) all(sapply(vr, function(v) r[v]==x[v])))]
+                      return(ifelse(is.element("H", SIs),"H",ifelse(is.element("M", SIs),"M","L")))
+                    }))
+  names(Rls) <- c(vr,"SI")
+  Data.adult[paste("score.A.no", nvr, sep=".")] <-
+    parApply(cl, Data.adult[vr], 1, FUN=parFun,
+             memb=membership, exp.m=expand.membership, match.r=match.rules, calc.sc=calc.score,
+             Tol=Tol, Rules=Rls, vars=vr)
+}
+stopCluster(cl)
+
+```
+
+
+```{r berekenen SI per variabele}
+
+# zonder SIL 
+vars <- names(Tolerantie.adult)[-6]
+cl <- makeCluster(3)
+for(vr in vars) {
+  R.tmp <- unique(Rules.adult[c(vr,"SI")])
+  Tol <- Tolerantie.adult[vr]
+  Rls <- data.frame(unique(R.tmp[vr]), 
+                    apply(unique(R.tmp[vr]), 1, function(r) {
+                      SIs <- R.tmp$SI[apply(R.tmp[vr], 1, function(x) all(sapply(vr, function(v) r[v]==x[v])))]
+                      return(ifelse(is.element("H", SIs),"H",ifelse(is.element("M", SIs),"M","L")))
+                    }))
+  names(Rls) <- c(vr,"SI")
+  Data.adult[paste("score.A", vr, sep=".")] <- 
+    parApply(cl, Data.adult[vr], 1, FUN=parFun, 
+             memb=membership, exp.m=expand.membership, match.r=match.rules, calc.sc=calc.score, 
+             Tol=Tol, Rules=Rls, vars=vr)
+}
+stopCluster(cl)
+
+```
+
+
+```{r berekenen SI op alle variabelen}
+
+# zonder SIL
+vars <- names(Tolerantie.adult)[-6]
+cl <- makeCluster(3)
+vr <- vars
+R.tmp <- unique(Rules.adult[c(vr,"SI")])
+Tol <- Tolerantie.adult[vr]
+Rls <- data.frame(unique(R.tmp[vr]),
+                  apply(unique(R.tmp[vr]), 1, function(r) {
+                    SIs <- R.tmp$SI[apply(R.tmp[vr], 1, function(x) all(sapply(vr, function(v) r[v]==x[v])))]
+                    return(ifelse(is.element("H", SIs),"H",ifelse(is.element("M", SIs),"M","L")))
+                  }))
+names(Rls) <- c(vr,"SI")
+Data.adult$score.A <- 
+    parApply(cl, Data.adult[vr], 1, FUN=parFun, 
+             memb=membership, exp.m=expand.membership, match.r=match.rules, calc.sc=calc.score, 
+             Tol=Tol, Rules=Rls, vars=vr)
+stopCluster(cl)
+
+Data.adult$score.A <- round(Data.adult$score.A,3)
+
+```
+
+
+```{r wegschrijven resultaten}
+
+write_delim(Data.adult, "fintmodel_resultaten_1D_adult.csv", delim = ";")
+
+```
+

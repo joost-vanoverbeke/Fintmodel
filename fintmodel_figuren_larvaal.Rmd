@@ -1,0 +1,233 @@
+---
+title: "fintmodel figuren larvaal"
+author: "Joost Vanoverbeke"
+output:
+  html_document: default
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, cache = FALSE, autodep = TRUE, cache.extra = R.version)
+
+```
+
+
+```{r libraries, cache=FALSE}
+
+library(tidyverse)
+library(magrittr)
+library(janitor)
+# library(gplots)
+# library(INBOtheme)
+library(RColorBrewer)
+
+options(stringsAsFactors = FALSE)
+
+```
+
+
+```{r afstanden tijposten}
+
+afst.tot.grens <- 65 # Afstand grens tot Vlissingen
+
+# afstanden tijposten
+Afst.sal <- data.frame(Locatie = c("Melle","Dendermonde","Tielrode","Antwerpen"),
+                       afst = c(4.2, 32.1, 53.3 ,78.3))
+
+```
+
+
+```{r ophalen gegevens}
+
+Data_larvaal <- read_delim("fintmodel_resultaten_2D_larvaal.csv",
+                         delim = ";",
+                         col_types = "diiddddddddddd") %>% 
+  left_join(read_delim("fintmodel_resultaten_2D_larvaal_incl.csv",
+                         delim = ";",
+                         col_types = "diidddddddddddddddd") %>% 
+              select(-(Temp:Stroom)))
+
+Data_larvaal %<>% 
+  mutate(afst_vlissingen = afst + afst.tot.grens,
+         afst_grens = afst,
+         afst_int = floor(afst_vlissingen)) %>% 
+  group_by(afst_int) %>% 
+  mutate(OMES = min(OMES)) %>% 
+  ungroup() %>% 
+  select(OMES,Year,afst_grens,afst_vlissingen,x,y,Temp:score.L.Stroom)
+
+```
+
+
+```{r variabelen}
+
+vars.group <- c("OMES","Year")
+
+vars.env.larvaal <- c("Temp","Oxy","Sal","SPM","Zoopl","Diepte","Stroom")
+nams.env.larvaal <- c("temperature (°C)","oxygen (mg/l)","salinity (ppm)","SPM (mg/l)","zooplankton (mgC/l)","water depth (m)","water velocity (m/s)")
+
+vars.score.larvaal <- c("score.L","score.L.Temp","score.L.Oxy","score.L.Sal","score.L.SPM","score.L.Zoopl","score.L.Diepte","score.L.Stroom")
+nams.score.larvaal <- c("all","only temperature","only oxygen","only salinity","only SPM","only zooplankton","only water depth","only water velocity")
+
+```
+
+
+```{r data environment per km}
+
+Data_larvaal_env <- Data_larvaal %>% 
+  select(vars.group, afst_vlissingen, vars.env.larvaal) %>% 
+  group_by_at(c(vars.group, "afst_vlissingen")) %>% 
+  summarise_all(mean, na.rm = TRUE) %>% 
+  ungroup() %>% 
+  mutate(afst_vlissingen = as.integer(floor(afst_vlissingen))) %>% 
+  group_by_at(c(vars.group, "afst_vlissingen")) %>%
+  summarise_all(mean, na.rm = TRUE) %>% 
+  ungroup() %>% 
+  mutate(OMES = ordered(OMES),
+         Year = ordered(Year)) %>% 
+    rename_at(vars.env.larvaal, ~ nams.env.larvaal)
+
+Data_larvaal_long_env <- Data_larvaal_env %>% 
+  gather(key="Variable", value="Value",
+         nams.env.larvaal) %>% 
+  mutate(Variable = factor(Variable, levels = nams.env.larvaal))
+
+```
+
+
+```{r figuren omgevingsvariabelen larvaal, fig.height=4, fig.width=10}
+
+vars_env_noYear <- c("water depth (m)","water velocity (m/s)")
+vars_env_year <- setdiff(nams.env.larvaal, vars_env_noYear)
+
+wd <- 10
+ht <- 4
+
+
+plots <- Data_larvaal_long_env %>%
+  filter(Variable %in% vars_env_year) %>% 
+  group_by(Variable) %>%
+  do(plot = 
+       ggplot(., aes(afst_vlissingen, Year)) +
+       geom_tile(aes(fill = Value)) +
+       # scale_fill_continuous(type = "viridis") +
+       scale_fill_distiller(palette = "RdYlBu") +
+       # scale_fill_distiller(palette = "PuOr") +
+       # scale_fill_distiller(palette = "RdBu") +
+       # scale_fill_distiller(palette = "Spectral") +
+       xlab("Distance to Sea (km)") +
+       ggtitle(unique(.$Variable)) +
+       theme_bw()
+       )
+plots$plot
+
+plots <- Data_larvaal_long_env %>%
+  filter(Variable %in% vars_env_noYear) %>% 
+  group_by(Variable) %>%
+  do(plot = 
+       ggplot(., aes(afst_vlissingen, Value)) +
+       geom_line() +
+       xlab("Distance to Sea (km)") +
+       ylab(unique(.$Variable)) +
+       theme_bw()
+       )
+plots$plot
+
+# map2(paste0("figuren/fint_larvaal_km_", simplify(map(str_split(plots$Variable, " \\("), ~ str_replace(.[1], " ", "_"))), ".jpg"), 
+#      plots$plot, ggsave, dpi = 600, width = wd, height = ht)
+
+```
+
+
+```{r data SI per km}
+
+Data_larvaal_SI <- Data_larvaal %>% 
+  select(vars.group, afst_vlissingen, vars.score.larvaal) %>% 
+  group_by_at(c(vars.group, "afst_vlissingen")) %>% 
+  summarise_all(funs(mean(sort(., decreasing=TRUE)[1:3], na.rm=TRUE))) %>% 
+  ungroup()
+
+Data_larvaal_long_SI <- Data_larvaal_SI %>%  
+  mutate(afst_vlissingen = as.integer(floor(afst_vlissingen))) %>% 
+  rename_at(vars.score.larvaal, ~ nams.score.larvaal) %>%
+  gather(key="Type_Score",value="Score",
+         nams.score.larvaal) %>%
+  group_by_at(c(vars.group, "afst_vlissingen", "Type_Score")) %>% 
+  summarise_all(funs(Score_lwr = quantile(., 0.025, na.rm = TRUE),
+                     Score_upr = quantile(., 0.975, na.rm = TRUE),
+                     Score = mean(., na.rm = TRUE))) %>% 
+  ungroup() %>% 
+  mutate(OMES = ordered(OMES),
+         Year = ordered(Year),
+         Type_Score = factor(Type_Score, levels = nams.score.larvaal))
+
+write_delim(Data_larvaal_long_SI, "Data_larvaal_long_SI.csv", delim = ";")
+
+```
+
+
+```{r figuren SI larvaal per km, fig.height=4, fig.width=10}
+
+wd <- 10
+ht <- 4
+
+
+# myPalette <- colorRampPalette(brewer.pal(9, "YlOrRd"))
+myPalette <- colorRampPalette(brewer.pal(11, "RdYlBu"))
+
+
+Data_larvaal_long_SI %>% 
+  mutate(Type_Score = factor(Type_Score, levels = sort(unique(Type_Score)))) %>% 
+  {ggplot(., aes(x=afst_vlissingen, y=Year)) +
+      geom_raster(aes(fill=Score)) +
+      scale_fill_distiller(name = "SI",
+                           palette = "RdYlGn", 
+                           # palette = "RdYlBu",
+                           direction = 1,
+                           limits = c(0,1)) +
+      xlab("Distance to Sea (km)") + ylab("Year") +
+      facet_wrap( ~ Type_Score) +
+      theme_bw() + 
+      theme(strip.text = element_text(size = 8))}
+
+ggsave(paste0("figuren/fintmodel_larvaal_km_SI.jpg"), dpi = 600, width = 8, height = 4)
+
+
+Data_larvaal_long_SI %>% 
+  filter(Type_Score == "all") %>% 
+  {ggplot(., aes(x=afst_vlissingen, y=Year)) +
+      geom_raster(aes(fill=Score)) +
+      scale_fill_distiller(name = "SI",
+                           palette = "RdYlGn", 
+                           # palette = "RdYlBu",
+                           direction = 1,
+                           limits = c(0,1)) +
+      xlab("Distance to Sea (km)") + ylab("Year") +
+      theme_bw() + 
+      theme(strip.text = element_text(size = 8))}
+
+ggsave(paste0("figuren/fintmodel_larvaal_km_SI_all.jpg"), dpi = 600, width = 6, height = 4)
+
+
+Data_larvaal_long_SI %>% 
+  filter(Type_Score != "all") %>% 
+  mutate(Type_Score = factor(Type_Score, levels = sort(unique(Type_Score)))) %>% 
+  {ggplot(., aes(x=afst_vlissingen, y=Year)) +
+      geom_raster(aes(fill=Score)) +
+      scale_fill_distiller(name = "SI",
+                           palette = "RdYlGn", 
+                           # palette = "RdYlBu",
+                           direction = 1,
+                           limits = c(0,1)) +
+      xlab("Distance to Sea (km)") + ylab("Year") +
+      scale_y_discrete(breaks = seq(2004,2018,by = 2), labels = seq(2004,2018,by = 2)) +
+      facet_wrap( ~ Type_Score) +
+      theme_bw() + 
+      theme(strip.text = element_text(size = 8))}
+
+ggsave(paste0("figuren/fintmodel_larvaal_km_SI_incl.jpg"), dpi = 600, width = 6, height = 4)
+
+```
+

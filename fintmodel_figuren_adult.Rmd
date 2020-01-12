@@ -1,0 +1,219 @@
+---
+title: "fintmodel figuren adult"
+author: "Joost Vanoverbeke"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, cache = FALSE, autodep = TRUE, cache.extra = R.version)
+
+```
+
+
+```{r libraries, cache=FALSE}
+
+library(tidyverse)
+library(magrittr)
+library(janitor)
+# library(gplots)
+# library(INBOtheme)
+library(RColorBrewer)
+
+options(stringsAsFactors = FALSE)
+
+```
+
+
+```{r afstanden tijposten}
+
+afst.tot.grens <- 65 # Afstand grens tot Vlissingen
+
+# afstanden tijposten
+Afst.sal <- data.frame(Locatie = c("Melle","Dendermonde","Tielrode","Antwerpen"),
+                       afst = c(4.2, 32.1, 53.3 ,78.3))
+
+```
+
+
+```{r ophalen gegevens}
+
+Data_adult <- read_delim("fintmodel_resultaten_1D_adult.csv",
+                         delim = ";",
+                         col_types = "diidddddddddddddddddd")
+
+Data_adult %<>% 
+  mutate(afst_vlissingen = afst + afst.tot.grens,
+         afst_grens = afst,
+         afst_int = floor(afst_vlissingen)) %>% 
+  group_by(afst_int) %>% 
+  mutate(OMES = min(OMES)) %>% 
+  ungroup() %>% 
+  select(OMES,Year,afst_grens,afst_vlissingen,x,y,Temp.A:score.A)
+
+```
+
+
+```{r variabelen}
+
+vars.group <- c("OMES","Year")
+
+vars.env.adult <- c("Sal","Oxy","Temp.A","Diepte","Stroom")
+nams.env.adult <- c("salinity (ppm)","oxygen (mg/l)","temperature (°C)","water depth (m)","water velocity (m/s)")
+
+vars.score.adult <- c("score.A","score.A.Oxy","score.A.Temp.A","score.A.Sal","score.A.Diepte","score.A.Stroom")
+nams.score.adult <- c("all","only oxygen","only temperature","only salinity","only water depth","only water velocity")
+
+```
+
+
+```{r data environment per km}
+
+Data_adult_env <- Data_adult %>% 
+  select(vars.group, afst_vlissingen, vars.env.adult) %>% 
+  mutate(afst_vlissingen = as.integer(floor(afst_vlissingen))) %>% 
+  group_by_at(c(vars.group, "afst_vlissingen")) %>%
+  summarise_all(mean, na.rm = TRUE) %>% 
+  ungroup() %>% 
+  mutate(OMES = ordered(OMES),
+         Year = ordered(Year)) %>% 
+    rename_at(vars.env.adult, ~ nams.env.adult)
+
+Data_adult_long_env <- Data_adult_env %>% 
+  gather(key="Variable", value="Value",
+         nams.env.adult) %>% 
+  mutate(Variable = factor(Variable, levels = nams.env.adult))
+
+```
+
+
+```{r figuren omgevingsvariabelen adult, fig.height=4, fig.width=10}
+
+vars_env_noYear <- c("water depth (m)","water velocity (m/s)")
+vars_env_year <- setdiff(nams.env.adult, vars_env_noYear)
+
+wd <- 10
+ht <- 4
+
+
+plots <- Data_adult_long_env %>%
+  filter(Variable %in% vars_env_year) %>% 
+  group_by(Variable) %>%
+  do(plot = 
+       ggplot(., aes(afst_vlissingen, Year)) +
+       geom_tile(aes(fill = Value)) +
+       # scale_fill_continuous(type = "viridis") +
+       scale_fill_distiller(palette = "RdYlBu") +
+       # scale_fill_distiller(palette = "PuOr") +
+       # scale_fill_distiller(palette = "RdBu") +
+       # scale_fill_distiller(palette = "Spectral") +
+       xlab("Distance from Vlissingen (km)") +
+       ggtitle(unique(.$Variable)) +
+       theme_bw()
+       )
+plots$plot
+
+plots <- Data_adult_long_env %>%
+  filter(Variable %in% vars_env_noYear) %>% 
+  group_by(Variable) %>%
+  do(plot = 
+       ggplot(., aes(afst_vlissingen, Value)) +
+       geom_line() +
+       xlab("Distance from Vlissingen (km)") +
+       ylab(unique(.$Variable)) +
+       theme_bw()
+       )
+plots$plot
+
+# map2(paste0("figuren/fint_adult_km_", simplify(map(str_split(plots$Variable, " \\("), ~ str_replace(.[1], " ", "_"))), ".jpg"), 
+#      plots$plot, ggsave, dpi = 600, width = wd, height = ht)
+
+```
+
+
+```{r data SI per km}
+
+Data_adult_long_SI <- Data_adult %>%  
+  select(vars.group, afst_vlissingen, vars.score.adult) %>% 
+  mutate(afst_vlissingen = as.integer(floor(afst_vlissingen))) %>% 
+  rename_at(vars.score.adult, ~ nams.score.adult) %>%
+  gather(key="Type_Score",value="Score",
+         nams.score.adult) %>%
+  group_by_at(c(vars.group, "afst_vlissingen", "Type_Score")) %>% 
+  summarise_all(funs(Score_lwr = quantile(., 0.025, na.rm = TRUE),
+                     Score_upr = quantile(., 0.975, na.rm = TRUE),
+                     Score = mean(., na.rm = TRUE))) %>% 
+  ungroup() %>% 
+  mutate(OMES = ordered(OMES),
+         Year = ordered(Year),
+         Type_Score = factor(Type_Score, levels = nams.score.adult))
+
+write_delim(Data_adult_long_SI, "Data_adult_long_SI.csv", delim = ";")
+
+```
+
+
+```{r figuren SI adult per km, fig.height=4, fig.width=10}
+
+wd <- 10
+ht <- 4
+
+
+# myPalette <- colorRampPalette(brewer.pal(9, "YlOrRd"))
+myPalette <- colorRampPalette(brewer.pal(11, "RdYlBu"))
+
+
+Data_adult_long_SI %>% 
+  mutate(Type_Score = factor(Type_Score, levels = sort(unique(Type_Score)))) %>% 
+  {ggplot(., aes(x=afst_vlissingen, y=Year)) +
+      geom_raster(aes(fill=Score)) +
+      scale_fill_distiller(name = "SI",
+                           palette = "RdYlGn", 
+                           # palette = "RdYlBu",
+                           direction = 1,
+                           limits = c(0,1)) +
+      xlab("distance from Vlissingen (km)") + ylab("Year") +
+      facet_wrap( ~ Type_Score) +
+      theme_bw() + 
+      theme(strip.text = element_text(size = 8))}
+
+ggsave(paste0("figuren/fintmodel_adult_km_SI.jpg"), dpi = 600, width = 8, height = 4)
+
+
+Data_adult_long_SI %>% 
+  filter(Type_Score == "all") %>% 
+  {ggplot(., aes(x=afst_vlissingen, y=Year)) +
+      geom_raster(aes(fill=Score)) +
+      scale_fill_distiller(name = "SI",
+                           palette = "RdYlGn", 
+                           # palette = "RdYlBu",
+                           direction = 1,
+                           limits = c(0,1)) +
+      xlab("distance from Vlissingen (km)") + ylab("Year") +
+      theme_bw() + 
+      theme(strip.text = element_text(size = 8))}
+
+ggsave(paste0("figuren/fintmodel_adult_km_SI_all.jpg"), dpi = 600, width = 6, height = 4)
+
+
+Data_adult_long_SI %>% 
+  filter(Type_Score != "all") %>% 
+  mutate(Type_Score = factor(Type_Score, levels = sort(unique(Type_Score)))) %>% 
+  {ggplot(., aes(x=afst_vlissingen, y=Year)) +
+      geom_raster(aes(fill=Score)) +
+      scale_fill_distiller(name = "SI",
+                           palette = "RdYlGn", 
+                           # palette = "RdYlBu",
+                           direction = 1,
+                           limits = c(0,1)) +
+      xlab("distance from Vlissingen (km)") + ylab("Year") +
+      scale_y_discrete(breaks = seq(2004,2018,by = 2), labels = seq(2004,2018,by = 2)) +
+      facet_wrap( ~ Type_Score) +
+      theme_bw() + 
+      theme(strip.text = element_text(size = 8))}
+
+ggsave(paste0("figuren/fintmodel_adult_km_SI_incl.jpg"), dpi = 600, width = 6, height = 4)
+
+```
+

@@ -1,0 +1,139 @@
+---
+title: "Fintmodel Berekening"
+author: "Joost Vanoverbeke"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, cache = FALSE, autodep = TRUE, cache.extra = R.version)
+
+```
+
+
+```{r libraries, cache=FALSE}
+
+library(tidyverse)
+library(magrittr)
+library(janitor)
+library(lubridate)
+library(readxl)
+library(writexl)
+library(RODBC)
+# library(INBOtheme)
+
+library(parallel)
+
+
+options(stringsAsFactors = FALSE)
+
+```
+
+
+```{r ophalen gegevens}
+
+source("Fuzzy_logic.R")
+
+fintData_short <- read_delim("fintData_short.csv", delim = ";")
+
+## met SPM dieptegemiddeld
+Data.larvaal <- fintData_short %>% 
+  select(Afstand_GR, Year, OMES, X, Y, Temp.linear, Oxygen.linear, Salinity.linear, SPM.depthAvg.linear, ZooC.linear, Depth, MaxVel.QN) %>% 
+  rename_at(names(.), ~c("afst","Year","OMES","x","y",names(Tolerantie.larvaal))) %>% 
+  drop_na()
+
+```
+
+
+```{r ophalen logische regels larvaal}
+
+Rules.larvaal <- read.table("writtenrules_sorted.txt",header=TRUE,sep="\t")
+
+Rules.larvaal <- Rules.larvaal[c("temp","oxy","sal","zs","zoo","depth","vel","SI")]
+names(Rules.larvaal) <- c(names(Tolerantie.larvaal),"SI")
+# de tolerantiezone die als optimaal wordt beschouwd wordt telkens als 'M' gecatalogeerd:
+Rules.larvaal$Oxy[Rules.larvaal$Oxy == "H"] <- "M"
+Rules.larvaal$SPM[Rules.larvaal$SPM == "L"] <- "M"
+
+##### aanpassen regels larvaal habitat
+Rules.larvaal$SI[Rules.larvaal$Sal == "M" & Rules.larvaal$SI == "H"] <- "M"
+Rules.larvaal$SI[Rules.larvaal$Diepte == "L"] <- "L"
+Rules.larvaal$SI[Rules.larvaal$Stroom == "H"] <- "L"
+Rules.larvaal$SI[Rules.larvaal$Oxy == "L"] <- "L"
+
+```
+
+
+```{r berekenen SI op alle variabelen}
+
+vars <- names(Tolerantie.larvaal)
+cl <- makeCluster(3)
+Data.larvaal$score.L <- 
+  parApply(cl, Data.larvaal[vars], 1, FUN=parFun, 
+           memb=membership, exp.m=expand.membership, match.r=match.rules, calc.sc=calc.score, 
+           Tol=Tolerantie.larvaal, Rules=Rules.larvaal, vars=vars)
+stopCluster(cl)
+
+Data.larvaal$score.L <- round(Data.larvaal$score.L,3)
+
+write_delim(Data.larvaal, "fintmodel_resultaten_2D_larvaal.csv", delim = ";")
+
+```
+
+
+```{r berekenen SI per variabele}
+
+Data.larvaal_SI_incl <- Data.larvaal
+
+vars <- names(Tolerantie.larvaal)
+cl <- makeCluster(3)
+for(vr in vars) {
+  R.tmp <- unique(Rules.larvaal[c(vr,"SI")])
+  Tol <- Tolerantie.larvaal[vr]
+  Rls <- data.frame(unique(R.tmp[vr]), 
+                    apply(unique(R.tmp[vr]), 1, function(r) {
+                      SIs <- R.tmp$SI[apply(R.tmp[vr], 1, function(x) all(sapply(vr, function(v) r[v]==x[v])))]
+                      return(ifelse(is.element("H", SIs),"H",ifelse(is.element("M", SIs),"M","L")))
+                    }))
+  names(Rls) <- c(vr,"SI")
+  Data.larvaal_SI_incl[paste("score.L", vr, sep=".")] <- 
+    parApply(cl, Data.larvaal_SI_incl[vr], 1, FUN=parFun, 
+             memb=membership, exp.m=expand.membership, match.r=match.rules, calc.sc=calc.score, 
+             Tol=Tol, Rules=Rls, vars=vr)
+}
+stopCluster(cl)
+
+write_delim(Data.larvaal_SI_incl, "fintmodel_resultaten_2D_larvaal_incl.csv", delim = ";")
+
+```
+
+
+```{r berekenen SI met weglaten van variabelen}
+
+Data.larvaal_SI_excl <- Data.larvaal
+
+vars <- names(Tolerantie.larvaal)
+excl <- names(Tolerantie.larvaal)
+cl <- makeCluster(3)
+for(nvr in excl) {
+  vr <- vars[vars!=nvr]
+  R.tmp <- unique(Rules.larvaal[c(vr,"SI")])
+  Tol <- Tolerantie.larvaal[vr]
+  Rls <- data.frame(unique(R.tmp[vr]),
+                    apply(unique(R.tmp[vr]), 1, function(r) {
+                      SIs <- R.tmp$SI[apply(R.tmp[vr], 1, function(x) all(sapply(vr, function(v) r[v]==x[v])))]
+                      return(ifelse(is.element("H", SIs),"H",ifelse(is.element("M", SIs),"M","L")))
+                    }))
+  names(Rls) <- c(vr,"SI")
+  Data.larvaal_SI_excl[paste("score.L.no", nvr, sep=".")] <-
+    parApply(cl, Data.larvaal_SI_excl[vr], 1, FUN=parFun,
+             memb=membership, exp.m=expand.membership, match.r=match.rules, calc.sc=calc.score,
+             Tol=Tol, Rules=Rls, vars=vr)
+}
+stopCluster(cl)
+
+write_delim(Data.larvaal_SI_excl, "fintmodel_resultaten_2D_larvaal_excl.csv", delim = ";")
+
+```
+
